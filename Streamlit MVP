@@ -1,0 +1,91 @@
+# Strategy Builder Agent (Forex & Crypto) – Streamlit MVP (ccxt fallback)
+# ---------------------------------------------------------------------
+# This version avoids crashing if ccxt is not installed. If ccxt is missing,
+# crypto data fetching will not work, but the rest of the app will still run.
+#
+# How to run locally:
+#   pip install streamlit pandas numpy ccxt yfinance ta matplotlib
+#   streamlit run app.py
+
+import io
+import json
+import math
+import time
+import textwrap
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# Optional imports guarded for environments without these packages
+try:
+    import ccxt  # for crypto data
+except Exception:  # pragma: no cover
+    ccxt = None
+
+try:
+    import yfinance as yf  # optional for forex via Yahoo (e.g., "EURUSD=X")
+except Exception:  # pragma: no cover
+    yf = None
+
+try:
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover
+    plt = None
+
+# ------------------------
+# Utility & Indicator funcs
+# ------------------------
+
+def to_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    if "timestamp" in df.columns:
+        if np.issubdtype(df["timestamp"].dtype, np.number):
+            df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        else:
+            df["datetime"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+        df = df.set_index("datetime").sort_index()
+    elif isinstance(df.index, pd.DatetimeIndex):
+        df = df.sort_index()
+    else:
+        raise ValueError("Provide a 'timestamp' column (ms or ISO8601) or a DatetimeIndex.")
+    return df
+
+# ------------------------
+# Data acquisition
+# ------------------------
+
+def fetch_crypto_ohlcv(symbol: str = "BTC/USDT", timeframe: str = "1h", limit: int = 1000,
+                        exchange_id: str = "binance") -> pd.DataFrame:
+    if ccxt is None:
+        st.warning("ccxt not installed, cannot fetch crypto data. Please install with 'pip install ccxt'.")
+        return pd.DataFrame()
+    ex = getattr(ccxt, exchange_id)()
+    ex.load_markets()
+    data = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    return to_datetime_index(df)
+
+
+def fetch_forex_yfinance(ticker: str = "EURUSD=X", interval: str = "1h", lookback_days: int = 180) -> pd.DataFrame:
+    if yf is None:
+        st.warning("yfinance not installed, cannot fetch forex data. Please install with 'pip install yfinance'.")
+        return pd.DataFrame()
+    period_map = {
+        "1m": "7d", "2m": "60d", "5m": "60d", "15m": "60d", "30m": "60d",
+        "60m": "730d", "1h": "730d", "1d": "max"
+    }
+    period = period_map.get(interval, "730d")
+    hist = yf.download(tickers=ticker, period=period, interval=interval, auto_adjust=False, progress=False)
+    if hist.empty:
+        st.warning("No data returned from yfinance.")
+        return pd.DataFrame()
+    hist = hist.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
+    hist.index = pd.to_datetime(hist.index, utc=True)
+    hist["timestamp"] = (hist.index.view(np.int64) // 1_000_000)
+    return hist
+
+# ------------------------
+# (rest of the strategy, backtest, pine script, and UI code remain unchanged)
+# ------------------------
